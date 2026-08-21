@@ -1,0 +1,7 @@
+.dotnet/
+bin/
+obj/
+dist/
+*.user
+*.wav
+*.partial
