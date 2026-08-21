@@ -13,4 +13,8 @@ if (-not (Test-Path $dotnet)) {
     -p:IncludeNativeLibrariesForSelfExtract=true `
     --output (Join-Path $PSScriptRoot 'dist')
 
+if ($LASTEXITCODE -ne 0) {
+    throw "게시 빌드가 종료 코드 $LASTEXITCODE(으)로 실패했습니다."
+}
+
 Write-Host "완료: $(Join-Path $PSScriptRoot 'dist\MeetRecorder.exe')"

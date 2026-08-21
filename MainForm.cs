@@ -14,7 +14,6 @@ internal sealed class MainForm : Form
     private readonly Button _refreshButton = new() { Text = "장치 새로고침" };
     private readonly Button _recordButton = new() { Text = "녹음 시작" };
     private readonly Button _openFolderButton = new() { Text = "저장 폴더 열기" };
-    private readonly CheckBox _consentBox = new() { Text = "회의 참가자에게 녹음 사실을 알렸습니다.", AutoSize = true };
     private readonly Label _statusLabel = new() { Text = "녹음 준비", AutoSize = true };
     private readonly Label _timerLabel = new() { Text = "00:00:00", AutoSize = true };
     private readonly ProgressBar _progressBar = new() { Visible = false, Minimum = 0, Maximum = 100 };
@@ -26,7 +25,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Meet 음성 녹음기";
+        Text = "Windows 음성 녹음기";
         ClientSize = new Size(540, 475);
         MinimumSize = new Size(500, 500);
         StartPosition = FormStartPosition.CenterScreen;
@@ -34,7 +33,8 @@ internal sealed class MainForm : Form
         BackColor = Color.FromArgb(246, 247, 249);
 
         BuildLayout();
-        _folderBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Meet 녹음");
+        _folderBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Windows 녹음");
+        _titleBox.Text = $"{DateTime.Today:yyyy-MM-dd} 회의록";
         _recordButton.Click += RecordButtonClick;
         _browseButton.Click += BrowseButtonClick;
         _openFolderButton.Click += (_, _) => OpenSaveFolder();
@@ -48,7 +48,7 @@ internal sealed class MainForm : Form
     {
         var title = new Label
         {
-            Text = "Meet 음성 녹음기",
+            Text = "Windows 음성 녹음기",
             Font = new Font(Font.FontFamily, 18F, FontStyle.Bold),
             AutoSize = true,
         };
@@ -69,11 +69,10 @@ internal sealed class MainForm : Form
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.Controls.Add(title);
         content.Controls.Add(description);
-        content.Controls.Add(CreateField("회의 제목", _titleBox));
+        content.Controls.Add(CreateField("녹음 파일 제목", _titleBox));
         content.Controls.Add(CreateDeviceField());
         content.Controls.Add(CreateField("마이크", _microphoneBox));
         content.Controls.Add(CreateFolderField());
-        content.Controls.Add(_consentBox);
         content.Controls.Add(CreateStatusPanel());
         content.Controls.Add(_progressBar);
         content.Controls.Add(CreateActionPanel());
@@ -85,7 +84,7 @@ internal sealed class MainForm : Form
         var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        panel.Controls.Add(CreateField("회의 소리가 나오는 스피커·헤드폰", _speakerBox), 0, 0);
+        panel.Controls.Add(CreateField("소리가 나오는 스피커·헤드폰(화면 녹음이 안된다면 장비를 확인하시고 새로고침을 눌러주세요)", _speakerBox), 0, 0);
         _refreshButton.Margin = new Padding(8, 24, 0, 0);
         _refreshButton.AutoSize = true;
         panel.Controls.Add(_refreshButton, 1, 0);
@@ -164,10 +163,11 @@ internal sealed class MainForm : Form
             _speakerBox.Items.Clear();
             _microphoneBox.Items.Clear();
             _speakerBox.Items.AddRange(speakers);
+            _microphoneBox.Items.Add("사용 안 함 (컴퓨터 소리만 녹음)");
             _microphoneBox.Items.AddRange(microphones);
-            SelectDefault(_speakerBox, _deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID);
-            SelectDefault(_microphoneBox, _deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications).ID);
-            _statusLabel.Text = speakers.Length > 0 && microphones.Length > 0 ? "녹음 준비" : "사용 가능한 오디오 장치를 확인하세요.";
+            SelectDefault(_speakerBox, TryGetDefaultDeviceId(_deviceEnumerator, DataFlow.Render, Role.Multimedia, Role.Console));
+            SelectDefault(_microphoneBox, TryGetDefaultDeviceId(_deviceEnumerator, DataFlow.Capture, Role.Communications, Role.Multimedia, Role.Console));
+            _statusLabel.Text = speakers.Length > 0 ? "녹음 준비" : "사용 가능한 출력 장치를 확인하세요.";
         }
         catch (Exception exception)
         {
@@ -175,14 +175,34 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static void SelectDefault(ComboBox box, string deviceId)
+    private static string? TryGetDefaultDeviceId(MMDeviceEnumerator enumerator, DataFlow flow, params Role[] roles)
     {
-        for (var index = 0; index < box.Items.Count; index++)
+        foreach (var role in roles)
         {
-            if (box.Items[index] is DeviceItem item && item.Device.ID == deviceId)
+            try
             {
-                box.SelectedIndex = index;
-                return;
+                using var device = enumerator.GetDefaultAudioEndpoint(flow, role);
+                return device.ID;
+            }
+            catch
+            {
+                // 일부 PC에는 기본 통신 장치가 지정되어 있지 않을 수 있다.
+            }
+        }
+        return null;
+    }
+
+    private static void SelectDefault(ComboBox box, string? deviceId)
+    {
+        if (deviceId is not null)
+        {
+            for (var index = 0; index < box.Items.Count; index++)
+            {
+                if (box.Items[index] is DeviceItem item && item.Device.ID == deviceId)
+                {
+                    box.SelectedIndex = index;
+                    return;
+                }
             }
         }
         if (box.Items.Count > 0) box.SelectedIndex = 0;
@@ -199,21 +219,17 @@ internal sealed class MainForm : Form
 
     private void StartRecording()
     {
-        if (!_consentBox.Checked)
+        if (_speakerBox.SelectedItem is not DeviceItem speaker)
         {
-            MessageBox.Show(this, "회의 참가자에게 녹음 사실을 알린 뒤 확인란을 선택해주세요.", "녹음 안내", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "회의 소리가 나오는 스피커 또는 헤드폰을 선택해주세요.", "장치 선택", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        if (_speakerBox.SelectedItem is not DeviceItem speaker || _microphoneBox.SelectedItem is not DeviceItem microphone)
-        {
-            MessageBox.Show(this, "스피커와 마이크를 선택해주세요.", "장치 선택", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+        var microphone = _microphoneBox.SelectedItem as DeviceItem;
 
         try
         {
             Directory.CreateDirectory(_folderBox.Text);
-            _recorder.Start(speaker.Device, microphone.Device, _folderBox.Text);
+            _recorder.Start(speaker.Device, microphone?.Device, _folderBox.Text);
             _recordingStartedAt = DateTime.Now;
             _timer.Start();
             SetInputsEnabled(false);
@@ -268,7 +284,10 @@ internal sealed class MainForm : Form
     {
         var title = string.IsNullOrWhiteSpace(_titleBox.Text) ? "회의" : _titleBox.Text.Trim();
         title = Regex.Replace(title, $"[{Regex.Escape(new string(Path.GetInvalidFileNameChars()))}]", "_");
-        var baseName = $"{_recordingStartedAt:yyyy-MM-dd_HHmm}_{title}";
+        var defaultTitle = $"{_recordingStartedAt:yyyy-MM-dd} 회의록";
+        var baseName = title == defaultTitle
+            ? $"{_recordingStartedAt:yyyy-MM-dd_HHmm}_회의록"
+            : $"{_recordingStartedAt:yyyy-MM-dd_HHmm}_{title}";
         var path = Path.Combine(_folderBox.Text, baseName + ".mp3");
         var suffix = 2;
         while (File.Exists(path)) path = Path.Combine(_folderBox.Text, $"{baseName}_{suffix++}.mp3");
@@ -300,7 +319,6 @@ internal sealed class MainForm : Form
         _titleBox.Enabled = enabled;
         _browseButton.Enabled = enabled;
         _refreshButton.Enabled = enabled;
-        _consentBox.Enabled = enabled;
     }
 
     private async void MainFormClosing(object? sender, FormClosingEventArgs e)

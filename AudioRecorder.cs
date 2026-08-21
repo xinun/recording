@@ -19,27 +19,30 @@ internal sealed class AudioRecorder : IDisposable
 
     public bool IsRecording { get; private set; }
 
-    public void Start(MMDevice speaker, MMDevice microphone, string workingDirectory)
+    public void Start(MMDevice speaker, MMDevice? microphone, string workingDirectory)
     {
         if (IsRecording) throw new InvalidOperationException("이미 녹음 중입니다.");
 
         Directory.CreateDirectory(workingDirectory);
         var token = Guid.NewGuid().ToString("N");
         _speakerTempPath = Path.Combine(workingDirectory, $".{token}.speaker.wav");
-        _microphoneTempPath = Path.Combine(workingDirectory, $".{token}.microphone.wav");
+        _microphoneTempPath = microphone is null ? null : Path.Combine(workingDirectory, $".{token}.microphone.wav");
 
         try
         {
             _speakerCapture = new WasapiLoopbackCapture(speaker);
-            _microphoneCapture = new WasapiCapture(microphone, true, 100);
             _recordingClock = Stopwatch.StartNew();
             _speakerFile = new TimedWaveFile(_speakerTempPath, _speakerCapture.WaveFormat, _recordingClock);
-            _microphoneFile = new TimedWaveFile(_microphoneTempPath, _microphoneCapture.WaveFormat, _recordingClock);
+            if (microphone is not null && _microphoneTempPath is not null)
+            {
+                _microphoneCapture = new WasapiCapture(microphone, true, 100);
+                _microphoneFile = new TimedWaveFile(_microphoneTempPath, _microphoneCapture.WaveFormat, _recordingClock);
+            }
 
             _speakerCapture.DataAvailable += SpeakerDataAvailable;
-            _microphoneCapture.DataAvailable += MicrophoneDataAvailable;
+            if (_microphoneCapture is not null) _microphoneCapture.DataAvailable += MicrophoneDataAvailable;
             _speakerCapture.StartRecording();
-            _microphoneCapture.StartRecording();
+            _microphoneCapture?.StartRecording();
             IsRecording = true;
         }
         catch
@@ -90,14 +93,16 @@ internal sealed class AudioRecorder : IDisposable
 
     private void MixToMp3(string outputPath, IProgress<int>? progress)
     {
-        if (_speakerTempPath is null || _microphoneTempPath is null)
-            throw new InvalidOperationException("임시 녹음 파일을 찾을 수 없습니다.");
+        if (_speakerTempPath is null)
+            throw new InvalidOperationException("임시 스피커 녹음 파일을 찾을 수 없습니다.");
 
         using var speakerReader = new AudioFileReader(_speakerTempPath);
-        using var microphoneReader = new AudioFileReader(_microphoneTempPath);
-        var speaker = Normalize(speakerReader);
-        var microphone = Normalize(microphoneReader);
-        var mixer = new MixingSampleProvider(new[] { speaker, microphone }) { ReadFully = false };
+        using var microphoneReader = _microphoneTempPath is not null && File.Exists(_microphoneTempPath)
+            ? new AudioFileReader(_microphoneTempPath)
+            : null;
+        var inputs = new List<ISampleProvider> { Normalize(speakerReader) };
+        if (microphoneReader is not null) inputs.Add(Normalize(microphoneReader));
+        var mixer = new MixingSampleProvider(inputs) { ReadFully = false };
         var pcm = mixer.ToWaveProvider16();
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
@@ -106,7 +111,8 @@ internal sealed class AudioRecorder : IDisposable
         {
             using var writer = new LameMP3FileWriter(partialPath, pcm.WaveFormat, 128);
             var buffer = new byte[pcm.WaveFormat.AverageBytesPerSecond];
-            var expectedBytes = Math.Max(1L, (long)(Math.Max(speakerReader.TotalTime.TotalSeconds, microphoneReader.TotalTime.TotalSeconds)
+            var durationSeconds = Math.Max(speakerReader.TotalTime.TotalSeconds, microphoneReader?.TotalTime.TotalSeconds ?? 0);
+            var expectedBytes = Math.Max(1L, (long)(durationSeconds
                 * pcm.WaveFormat.AverageBytesPerSecond));
             long written = 0;
             int read;
